@@ -1,0 +1,168 @@
+pipeline {
+    agent any
+
+    environment {
+        REPO_URL = 'https://github.com/redis-developer/basic-redis-chat-app-demo-python.git'
+        AWS_ACCOUNT_ID = '<your-aws-account-id>'
+        ECR_REPO = '<your-ecr-repo>'
+        S3_BUCKET = '<your-s3-bucket>'
+        SLACK_WEBHOOK = '<your-slack-webhook>'
+        SONARQUBE_TOKEN = '<your-sonarqube-token>'
+        DOCKER_IMAGE = "${ECR_REPO}:${BUILD_NUMBER}"
+        STAGING_NAMESPACE = 'staging' // Kubernetes namespace or ECS cluster for staging
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git branch: 'master', url: "${REPO_URL}"
+                sh 'echo "Code checked out successfully."'
+            }
+        }
+
+        stage('Build Project') {
+            steps {
+                script {
+                    if (fileExists('pom.xml')) {
+                        sh 'mvn clean install'
+                    } else if (fileExists('package.json')) {
+                        sh 'npm install'
+                    } else {
+                        error 'No build tool detected!'
+                    }
+                }
+                sh 'echo "Project built successfully."'
+            }
+        }
+
+        stage('Dependency Check & Security Scan') {
+            steps {
+                sh 'npm audit' // For NPM projects
+                sh 'echo "Dependency and security checks completed."'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh 'sonar-scanner -Dsonar.projectKey=basic-redis-chat-app -Dsonar.sources=. -Dsonar.host.url=http://localhost:9000 -Dsonar.login=${SONARQUBE_TOKEN}'
+                }
+                sh 'echo "SonarQube analysis completed."'
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh 'docker build -t ${DOCKER_IMAGE} .'
+                sh 'echo "Docker image built successfully."'
+            }
+        }
+
+        stage('Docker Image Scan') {
+            steps {
+                sh 'trivy image --exit-code 1 --severity CRITICAL ${DOCKER_IMAGE}'
+                sh 'echo "Docker image scanned successfully."'
+            }
+        }
+
+        stage('Push Docker Image to AWS ECR') {
+            steps {
+                sh '''
+                    aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com
+                    docker push ${DOCKER_IMAGE}
+                '''
+                sh 'echo "Docker image pushed to ECR successfully."'
+            }
+        }
+
+        stage('Deploy to Staging') {
+            steps {
+                script {
+                    // Example: Deploy to Kubernetes
+                    sh "kubectl apply -f k8s/staging-deployment.yaml -n ${STAGING_NAMESPACE}"
+                    sh "kubectl apply -f k8s/staging-service.yaml -n ${STAGING_NAMESPACE}"
+                }
+                sh 'echo "Application deployed to staging successfully."'
+            }
+        }
+
+        stage('Smoke Test in Staging') {
+            steps {
+                script {
+                    // Run smoke tests to verify the application is running
+                    sh 'curl -I http://staging-service-url:port'
+                    sh 'echo "Smoke tests completed successfully."'
+                }
+            }
+        }
+
+        stage('Integration Test in Staging') {
+            steps {
+                script {
+                    // Run integration tests in the staging environment
+                    sh 'npm run test:integration' // Adjust based on your project
+                    sh 'echo "Integration tests completed successfully."'
+                }
+            }
+        }
+
+        stage('Generate Reports') {
+            steps {
+                sh 'echo "Generating reports..."'
+                // Generate reports for each step (e.g., dependency check, security scan, SonarQube, etc.)
+                sh 'echo "Reports generated."'
+            }
+        }
+
+        stage('Upload Reports to S3') {
+            steps {
+                sh 'aws s3 cp reports/ s3://${S3_BUCKET}/reports/ --recursive'
+                sh 'echo "Reports uploaded to S3."'
+            }
+        }
+
+        stage('Slack Notification') {
+            steps {
+                script {
+                    if (currentBuild.result == 'SUCCESS') {
+                        slackSend channel: '#build-notifications', color: 'good', message: "Build ${BUILD_NUMBER} succeeded and deployed to staging!"
+                    } else {
+                        slackSend channel: '#build-notifications', color: 'danger', message: "Build ${BUILD_NUMBER} failed in staging!"
+                    }
+                }
+            }
+        }
+
+        stage('Approval for Production') {
+            steps {
+                script {
+                    // Add a manual approval step before promoting to production
+                    timeout(time: 1, unit: 'HOURS') {
+                        input message: 'Approve deployment to production?', ok: 'Deploy to Production'
+                    }
+                }
+            }
+        }
+
+        stage('Create Pull Request') {
+            steps {
+                script {
+                    // Use GitHub API or CLI to create a pull request
+                    sh 'echo "Creating pull request for main branch..."'
+                    // Example: gh pr create --base main --head feature-branch --title "Merge feature-branch into main"
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh 'echo "Pipeline execution completed."'
+        }
+        failure {
+            // Rollback deployment in case of failure
+            sh "kubectl rollout undo deployment/staging-deployment -n ${STAGING_NAMESPACE}"
+            sh 'echo "Rollback completed due to pipeline failure."'
+        }
+    }
+}

@@ -1,0 +1,101 @@
+pipeline {
+    agent any
+
+    environment {
+        // Optionally add environment variables here
+        VAULT_ADDR = 'http://127.0.0.1:8200'  // Vault address
+    }
+
+    stages {
+        stage('Test Vault Access') {
+            steps {
+                script {
+                    vault(
+                        vaultCredential: 'vault',  // Vault credentials configured in Jenkins
+                        url: env.VAULT_ADDR,  // Use the Vault URL from the environment variable
+                        path: 'secret/data/myapp',  // Correct Vault path to your secret
+                        secretValues: [
+                            [envVar: 'DB_PASSWORD', vaultKey: 'password']  // Fetch 'password' from the secret and set it as DB_PASSWORD
+                        ]
+                    )
+                    
+                    // Use the DB_PASSWORD environment variable in subsequent steps
+                    echo "The database password is: ${env.DB_PASSWORD}"
+                }
+            }
+        }
+
+        // Add other stages as needed
+    }
+}
+
+
+
+
+
+
+
+pipeline {
+    agent any
+
+    environment {
+        VAULT_ADDR = 'http://127.0.0.1:8200'  // Vault address (change if needed)
+    }
+
+    stages {
+        stage('Test Vault Access') {
+            steps {
+                script {
+                    try {
+                        // Assuming the Vault token is stored as an environment variable
+                        def vaultToken = env.VAULT_TOKEN
+
+                        if (!vaultToken) {
+                            error "Vault token is not available. Please check the credentials."
+                        }
+
+                        // Set the Vault environment variables
+                        sh """
+                            export VAULT_TOKEN=${vaultToken}
+                            export VAULT_ADDR=${env.VAULT_ADDR}
+
+                            # Try to fetch the secret from Vault
+                            secret_value=\$(vault kv get -field=value secret/myapp)
+
+                            # If successful, echo the value (for debugging purposes)
+                            echo "Fetched secret from Vault: \$secret_value"
+
+                            # Check if the secret is fetched successfully
+                            if [ -z "\$secret_value" ]; then
+                                echo "Failed to fetch secret from Vault."
+                                exit 1
+                            fi
+                        """
+                        echo "Vault secret fetched successfully."
+                    } catch (Exception e) {
+                        currentBuild.result = 'FAILURE'
+                        echo "Failed to fetch secret from Vault: ${e.message}"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline executed successfully!"
+            // Send email on success
+            mail to: 'recipient@example.com',
+                 subject: "Pipeline Success: Vault Access",
+                 body: "The pipeline has successfully accessed the Vault secret."
+        }
+        failure {
+            echo "Pipeline failed. Please check the logs."
+            // Send email on failure
+            mail to: 'recipient@example.com',
+                 subject: "Pipeline Failure: Vault Access",
+                 body: "The pipeline failed to access the Vault secret. Please check the logs."
+        }
+    }
+}
+

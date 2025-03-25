@@ -1,0 +1,67 @@
+pipeline {
+    agent any
+
+    environment {
+        VAULT_ADDR = 'http://127.0.0.1:8200'  // Vault address (change if needed)
+    }
+
+    stages {
+        stage('Test Vault Access') {
+            steps {
+                script {
+                    // Use withCredentials to fetch the Vault Token from Jenkins credentials
+                    withCredentials([string(credentialsId: 'vault', variable: 'VAULT_TOKEN')]) {
+                        try {
+                            // Ensure VAULT_TOKEN is available
+                            def vaultToken = env.VAULT_TOKEN
+                            echo "Vault Token: ${vaultToken}"
+
+                            if (!vaultToken) {
+                                error "Vault token is not available. Please check the credentials."
+                            }
+
+                            // Set the Vault environment variables
+                            sh """
+                                export VAULT_TOKEN=${vaultToken}
+                                export VAULT_ADDR=${env.VAULT_ADDR}
+
+                                # Try to fetch the secret from Vault
+                                secret_value=\$(vault kv get -field=value secret/myapp)
+
+                                # If successful, echo the value (for debugging purposes)
+                                echo "Fetched secret from Vault: \$secret_value"
+
+                                # Check if the secret is fetched successfully
+                                if [ -z "\$secret_value" ]; then
+                                    echo "Failed to fetch secret from Vault."
+                                    exit 1
+                                fi
+                            """
+                            echo "Vault secret fetched successfully."
+                        } catch (Exception e) {
+                            currentBuild.result = 'FAILURE'
+                            echo "Failed to fetch secret from Vault: ${e.message}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline executed successfully!"
+            // Send email on success
+            mail to: '',
+                 subject: "Pipeline Success: Vault Access",
+                 body: "The pipeline has successfully accessed the Vault secret."
+        }
+        failure {
+            echo "Pipeline failed. Please check the logs."
+            // Send email on failure
+            mail to: '',
+                 subject: "Pipeline Failure: Vault Access",
+                 body: "The pipeline failed to access the Vault secret. Please check the logs."
+        }
+    }
+}

@@ -1,0 +1,86 @@
+pipeline {
+    agent any
+
+    environment {
+        REPO_URL = 'https://github.com/redis-developer/basic-redis-chat-app-demo-python.git'
+        DOCKER_IMAGE = "redis-chat-local:${BUILD_NUMBER}"
+        SONARQUBE_TOKEN = credentials('sonar-token') // Ensure your token is available via Jenkins credentials
+        SONAR_SCANNER_HOME = 'SonarQube' // Ensure SonarQube scanner is configured in Jenkins tools
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git branch: 'master', url: "${REPO_URL}"
+                sh 'echo "Code checked out successfully."'
+            }
+        }
+
+        stage('Build Project') {
+            steps {
+                script {
+                    if (fileExists('pom.xml')) {
+                        sh 'mvn clean install'
+                    } else if (fileExists('client/package.json')) {
+                        dir('client') {
+                            sh 'npm install'
+                        }
+                    } else {
+                        error 'No build tool detected!'
+                    }
+                }
+                sh 'echo "Project built successfully."'
+            }
+        }
+
+        stage('Dependency Check & Security Scan') {
+            steps {
+                script {
+                    // Run npm audit and allow it to fail without halting the pipeline
+                    catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                        dir('client') {
+                            sh 'npm audit' // Run npm audit for security vulnerabilities
+                            sh 'echo "Dependency and security checks completed."'
+                        }
+                    }
+                }
+            }
+        }
+
+        // SonarQube Analysis stage added below Dependency Check & Security Scan
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+
+                    sh '$SONAR_SCANNER_HOME -Dsonar.projectKey=basic-redis-chat-app -Dsonar.sources=. -Dsonar.host.url=http://localhost:9000 -Dsonar.login=${SONARQUBE_TOKEN}'
+                }
+                sh '$SONAR_SCANNER_HOME'
+                sh 'echo "SonarQube analysis completed."'
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh 'docker build -t ${DOCKER_IMAGE} .'
+                sh 'echo "Docker image built successfully."'
+            }
+        }
+
+        stage('Docker Image Scan') {
+            steps {
+                sh 'trivy image --exit-code 1 --severity CRITICAL ${DOCKER_IMAGE}'
+                sh 'echo "Docker image scanned successfully."'
+            }
+        }
+    }
+
+    post {
+        always {
+            sh 'echo "Pipeline execution completed."'
+        }
+        failure {
+            // No longer remove Docker image in case of failure
+            sh 'echo "Pipeline failed, but Docker image is retained."'
+        }
+    }
+}

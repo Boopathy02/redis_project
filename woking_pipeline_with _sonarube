@@ -1,0 +1,90 @@
+pipeline {
+    agent any
+
+    environment {
+        REPO_URL = 'https://github.com/redis-developer/basic-redis-chat-app-demo-python.git'
+        DOCKER_IMAGE = "redis-chat-local:${BUILD_NUMBER}"
+        SONARQUBE_TOKEN = credentials('sonar-token')
+        PATH = "$PATH:/opt/sonar-scanner/bin" 
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git branch: 'master', url: "${REPO_URL}"
+                sh 'echo "Code checked out successfully."'
+                sh 'ls -lah'  
+            }
+        }
+
+        stage('Build Project') {
+            steps {
+                script {
+                    if (fileExists('pom.xml')) {
+                        sh 'mvn clean install'
+                    } else if (fileExists('client/package.json')) {
+                        dir('client') {
+                            sh 'npm install'
+                        }
+                    } else {
+                        error 'No build tool detected!'
+                    }
+                }
+                sh 'echo "Project built successfully."'
+            }
+        }
+
+        stage('Dependency Check & Security Scan') {
+            steps {
+                script {
+                    catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                        dir('client') {
+                            sh 'npm audit || true'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh '''
+                    sonar-scanner \
+                    -Dsonar.projectKey=basic-redis-chat-app \
+                    -Dsonar.sources=. \
+                    -Dsonar.host.url=http://localhost:9000 \
+                    -Dsonar.login=${SONARQUBE_TOKEN}
+                    '''
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh 'docker build -t ${DOCKER_IMAGE} .'
+                sh 'echo "Docker image built successfully."'
+            }
+        }
+
+        stage('Docker Image Scan') {
+            steps {
+                script {
+                    catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                        sh 'trivy image --exit-code 1 --severity CRITICAL ${DOCKER_IMAGE}'
+                    }
+                }
+                sh 'echo "Docker image scanned successfully."'
+            }
+        }
+    }
+
+    post {
+        always {
+            sh 'echo "Pipeline execution completed."'
+        }
+        failure {
+            sh 'echo "Pipeline failed, but Docker image is retained."'
+        }
+    }
+}

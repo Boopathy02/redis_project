@@ -1,0 +1,28 @@
+pipeline {
+    agent any
+    stages {
+        stage('Fetch Credentials') {
+            steps {
+                script {
+                    // Fetch credentials from Vault
+                    def creds = vault(
+                        path: 'secret/myapp',
+                        engineVersion: '2' // Ensure this is a string
+                    )
+                    
+                    // Check if creds is null
+                    if (creds == null || creds.data == null) {
+                        error "Failed to fetch credentials from Vault. Check the path and permissions."
+                    }
+                    
+                    // Use the credentials
+                    def username = creds.data.username
+                    def password = creds.data.password
+                    
+                    echo "Username: ${username}"
+                    // Use the password securely, e.g., in a build step
+                }
+            }
+        }
+    }
+}
